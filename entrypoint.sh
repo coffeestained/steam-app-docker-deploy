@@ -1,45 +1,67 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+# Installs/updates STEAM_APP_ID into /app, runs the start command, and
+# restarts it after a daily update at UPDATE_TIME.
+#
+#   STEAM_APP_ID   required   e.g. 380870 (Project Zomboid)
+#   UPDATE_TIME    00:00      HH:MM in the container's TZ, or "never"
+#   STEAM_BETA     ""         optional beta branch name
+#   STEAM_LOGIN    anonymous  most dedicated servers allow anonymous
+#   $@             required   start command, run from /app
+set -euo pipefail
+
+: "${STEAM_APP_ID:?STEAM_APP_ID is required}"
+UPDATE_TIME="${UPDATE_TIME:-00:00}"
+STEAM_LOGIN="${STEAM_LOGIN:-anonymous}"
+[[ $# -gt 0 ]] || { echo "no start command given" >&2; exit 1; }
 
 APP_PID=""
+LAST_UPDATE_DAY=""
+
+log() { echo "[$(date +%H:%M:%S)] $*"; }
 
 update_app() {
-  echo "[Updater] Checking for updates..."
-  steamcmd \
-    +force_install_dir /app \
-    +login anonymous \
-    +app_update "$STEAM_APP_ID" validate \
+  log "steamcmd: updating app $STEAM_APP_ID"
+  local beta=()
+  [[ -n "${STEAM_BETA:-}" ]] && beta=(-beta "$STEAM_BETA")
+  "$STEAMCMD_DIR/steamcmd.sh" \
+    +force_install_dir "$APP_DIR" \
+    +login "$STEAM_LOGIN" \
+    +app_update "$STEAM_APP_ID" "${beta[@]}" validate \
     +quit
+  LAST_UPDATE_DAY=$(date +%F)
 }
 
 start_app() {
-  echo "[Runner] Starting app..."
-  cd /app
+  log "starting: $*"
+  cd "$APP_DIR"
   "$@" &
   APP_PID=$!
 }
 
 stop_app() {
-  if [ -n "$APP_PID" ]; then
-    echo "[Runner] Stopping app..."
-    kill "$APP_PID"
-    wait "$APP_PID" || true
-  fi
+  [[ -n "$APP_PID" ]] || return 0
+  log "stopping pid $APP_PID"
+  kill -TERM "$APP_PID" 2>/dev/null || true
+  wait "$APP_PID" 2>/dev/null || true
+  APP_PID=""
 }
 
-# Initial install
+# docker stop sends TERM; pass it on so the server saves and exits cleanly.
+trap 'stop_app; exit 0' TERM INT
+
 update_app
 start_app "$@"
 
-# Midnight update loop
 while true; do
-  sleep 60
-  NOW=$(date +%H:%M)
-
-  if [ "$NOW" = "00:00" ]; then
+  sleep 30
+  # Restart if the server died on its own (crash, admin /quit).
+  if ! kill -0 "$APP_PID" 2>/dev/null; then
+    log "app exited; restarting"
+    start_app "$@"
+  fi
+  if [[ "$UPDATE_TIME" != "never" && "$(date +%H:%M)" == "$UPDATE_TIME" && "$LAST_UPDATE_DAY" != "$(date +%F)" ]]; then
     stop_app
     update_app
     start_app "$@"
-    sleep 61
   fi
 done

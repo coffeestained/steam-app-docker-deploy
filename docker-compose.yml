@@ -1,0 +1,15 @@
+# Example: Project Zomboid. Swap the app id, ports and command for other servers.
+services:
+  zomboid:
+    build: .
+    container_name: zomboid
+    restart: unless-stopped
+    environment:
+      STEAM_APP_ID: "380870"
+      UPDATE_TIME: "04:00"      # server-local time; "never" to disable
+    ports:
+      - "16261:16261/udp"
+      - "16262:16262/udp"
+    volumes:
+      - ./data/zomboid:/app
+    command: ["./start-server.sh", "-servername", "mine"]
